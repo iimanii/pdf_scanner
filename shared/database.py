@@ -36,6 +36,23 @@ class Task(Base):
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
+
+class Metric(Base):
+    __tablename__ = "metrics"
+
+    metric_name = Column(String(50), primary_key=True, index=True)
+    metric_value = Column(Integer, nullable=False, default=1)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow)
+
+
+def increment_metric(metric_name, db):
+    """Atomically increment a metric counter"""
+    metric = db.query(Metric).filter(Metric.metric_name == metric_name).first()
+    if metric:
+        metric.metric_value += 1
+        metric.updated_at = datetime.utcnow()
+
 def get_db():
     """
     Get database session for FastAPI dependency injection.

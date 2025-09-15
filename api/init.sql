@@ -40,3 +40,38 @@ CREATE TRIGGER task_update_trigger
     AFTER UPDATE ON tasks
     FOR EACH ROW
     EXECUTE FUNCTION notify_task_change();
+
+CREATE TABLE IF NOT EXISTS metrics (
+    metric_name VARCHAR(50) PRIMARY KEY,
+    metric_value INTEGER NOT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_metrics_name ON metrics(metric_name);
+
+-- Initialize the three metrics
+INSERT INTO metrics (metric_name, metric_value) VALUES
+    ('submitted', 0),
+    ('completed', 0),
+    ('failed', 0)
+ON CONFLICT (metric_name) DO NOTHING;
+
+-- Trigger function for metrics updates
+CREATE OR REPLACE FUNCTION notify_metrics_change()
+RETURNS trigger AS $$
+BEGIN
+    RAISE NOTICE 'Trigger fired for metric: %', NEW.metric_name;
+    PERFORM pg_notify('metrics_updates', json_build_object(
+        'metric_name', NEW.metric_name,
+        'metric_value', NEW.metric_value
+    )::text);
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+-- Trigger for metrics table
+CREATE TRIGGER metrics_update_trigger
+    AFTER UPDATE ON metrics
+    FOR EACH ROW
+    EXECUTE FUNCTION notify_metrics_change();

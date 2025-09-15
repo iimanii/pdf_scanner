@@ -4,7 +4,7 @@ import threading
 import signal
 import concurrent.futures
 from datetime import datetime, timedelta
-from shared.database import get_db_session, Task, init_database_url
+from shared.database import get_db_session, Task, init_database_url, increment_metric
 from sqlalchemy import or_, and_
 import json
 from virustotal import VirusTotal
@@ -92,6 +92,7 @@ class Worker:
                     task.status = "COMPLETED"
                     task.scan_report_path = report_path
                     task.virustotal_url = f"https://www.virustotal.com/gui/file-analysis/{task.virustotal_id}"
+                    increment_metric('completed', db)
                     db.commit()
 
                     print(f"Task {task.id} completed")
@@ -104,12 +105,14 @@ class Worker:
                     # VirusTotal analysis failed
                     task.status = "FAILED"
                     task.error_message = f"VirusTotal analysis {status}"
+                    increment_metric('failed', db)
                     db.commit()
                     print(f"Task {task.id} failed with VirusTotal status: {status}", flush=True)
                 else:
                     # Unknown status
                     task.status = "FAILED"
                     task.error_message = f"Unknown VirusTotal status: {status}"
+                    increment_metric('failed', db)
                     db.commit()
                     print(f"Task {task.id} failed with unknown status: {status}", flush=True)
 
@@ -119,10 +122,10 @@ class Worker:
                 task.status = "PENDING"
                 task.worker_heartbeat = datetime.utcnow()
                 db.commit()
-
         except Exception as e:
             task.status = "FAILED"
             task.error_message = str(e)
+            increment_metric('failed', db)
             db.commit()
             print(f"Task {task.id} failed: {e}", flush=True)
 

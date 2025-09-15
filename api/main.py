@@ -5,7 +5,7 @@ import os
 import traceback
 import json
 from typing import List
-from shared.database import get_db, Task, init_database_url
+from shared.database import get_db, get_db_session, Metric, Task, init_database_url, increment_metric
 import shared.utils as utils
 import asyncio
 import asyncpg
@@ -90,6 +90,13 @@ async def websocket_endpoint(websocket: WebSocket, db: Session = Depends(get_db)
             "tasks": [format_task(task) for task in tasks]
         }))
 
+        # Send initial metrics
+        metrics = db.query(Metric).all()
+        await websocket.send_text(json.dumps({
+            "type": "initial_metrics",
+            "metrics": {m.metric_name: m.metric_value for m in metrics}
+        }))
+
         # Keep connection alive
         while True:
             await websocket.receive_text()
@@ -162,8 +169,11 @@ async def upload_pdf(
             status="PENDING"
         )
         db.add(new_task)
+        increment_metric('submitted', db)
+
         db.commit()
         db.refresh(new_task)
+
 
         # Broadcast new task to WebSocket clients
         await manager.broadcast({
@@ -246,6 +256,11 @@ async def get_scan_results(task_id: int, db: Session = Depends(get_db)):
         "scan_results": scan_data
     }
 
+@app.get("/metrics")
+async def get_metrics(db: Session = Depends(get_db)):
+    metrics = db.query(Metric).all()
+    return {m.metric_name: m.metric_value for m in metrics}
+
 @app.get("/")
 async def root():
     """API root endpoint"""
@@ -266,9 +281,24 @@ async def notification_handler(connection, pid, channel, payload):
     except Exception as e:
         print(f"Notification error: {e}", flush=True)
 
+async def metrics_notification_handler(connection, pid, channel, payload):
+    print("metric update", flush=True)
+    db = get_db_session()
+    try:
+        metrics = db.query(Metric).all()
+        await manager.broadcast({
+            "type": "metrics_update",
+            "metrics": {m.metric_name: m.metric_value for m in metrics}
+        })
+    except Exception as e:
+        print(f"metric update error: {e}", flush=True)
+    finally:
+        db.close()
+
 async def start_db_listener(url):
     conn = await asyncpg.connect(url)
     await conn.add_listener('task_updates', notification_handler)
+    await conn.add_listener('metrics_updates', metrics_notification_handler)
     print("task updates listener started", flush=True)
     await asyncio.Event().wait()
 

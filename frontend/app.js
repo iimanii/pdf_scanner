@@ -9,6 +9,7 @@ const App = () => {
     const [dragActive, setDragActive] = useState(false);
     const [wsStatus, setWsStatus] = useState('Connecting...');
     const [tooltip, setTooltip] = useState({ show: false, taskId: null, message: '', x: 0, y: 0 });
+    const [metrics, setMetrics] = useState({ submitted: 0, completed: 0, failed: 0 });
 
     const wsRef = useRef(null);
     const reconnectAttemptRef = useRef(0);
@@ -63,6 +64,10 @@ const App = () => {
                     } else if (data.type === 'new_task') {
                         // Add new task to the beginning
                         setTasks(prevTasks => [data.task, ...prevTasks.slice(0, 99)]);
+                    } else if(data.type === 'initial_metrics') {
+                        setMetrics(data.metrics);
+                    } else if (data.type === 'metrics_update') {
+                        setMetrics(data.metrics);
                     }
                 };
 
@@ -240,6 +245,25 @@ const App = () => {
                             {uploading ? '⏳ Uploading...' : '🚀 Upload & Scan'}
                         </button>
                     </form>
+                </div>
+
+                {/* Metrics Section */}
+                <div className="bg-white rounded-lg shadow-md p-6 mb-8">
+                    <h2 className="text-2xl font-bold mb-4">System Metrics</h2>
+                    <div className="grid grid-cols-3 gap-4">
+                        <div className="bg-blue-50 p-4 rounded-lg text-center">
+                            <div className="text-2xl font-bold text-blue-600">{metrics.submitted}</div>
+                            <div className="text-sm text-blue-500">Tasks Submitted</div>
+                        </div>
+                        <div className="bg-green-50 p-4 rounded-lg text-center">
+                            <div className="text-2xl font-bold text-green-600">{metrics.completed}</div>
+                            <div className="text-sm text-green-500">Tasks Completed</div>
+                        </div>
+                        <div className="bg-red-50 p-4 rounded-lg text-center">
+                            <div className="text-2xl font-bold text-red-600">{metrics.failed}</div>
+                            <div className="text-sm text-red-500">Tasks Failed</div>
+                        </div>
+                    </div>
                 </div>
 
                 {/* Tasks Table */}
