@@ -1,6 +1,7 @@
 import os
 import time
 import threading
+import signal
 import concurrent.futures
 from datetime import datetime, timedelta
 from shared.database import get_db_session, Task, init_database_url
@@ -8,10 +9,20 @@ from sqlalchemy import or_, and_
 import json
 from virustotal import VirusTotal
 
+
 class Worker:
     def __init__(self, threads=1):
         self.num_threads = threads
         self.running = True
+
+        # Setup signal handlers for graceful shutdown
+        signal.signal(signal.SIGTERM, self.shutdown_handler)
+        signal.signal(signal.SIGINT, self.shutdown_handler)
+
+    def shutdown_handler(self, signum, frame):
+        """Handle shutdown signals gracefully"""
+        print("Received shutdown signal, stopping worker...")
+        self.running = False
 
     def claim_next_task(self):
         """Atomically claim next available task using skip_locked"""
@@ -36,18 +47,17 @@ class Worker:
             print(f"Thread {threading.current_thread().name} claimed task {task.id}", flush=True)
 
         return task, db
-    
+
     def worker_thread(self):
         """Individual worker thread function"""
         while self.running:
-            print("Claiming next task")
             task, db = self.claim_next_task()
 
             try:
-                if task:
+                if task and self.running:
                     print(f"Found task, processing {task.id}", flush=True)
                     self.process_task(task, db)
-                else:
+                elif self.running:
                     time.sleep(5)
             finally:
                 db.close()
@@ -115,7 +125,7 @@ class Worker:
             task.error_message = str(e)
             db.commit()
             print(f"Task {task.id} failed: {e}", flush=True)
-    
+
     def run(self):
         """Start multiple worker threads"""
         print(f"Starting worker with {self.num_threads} threads")
@@ -125,6 +135,7 @@ class Worker:
         # Start all worker threads
         for i in range(self.num_threads):
             thread = threading.Thread(target=self.worker_thread, name=f"Worker-{i + 1}")
+            thread.daemon = True
             threads.append(thread)
             thread.start()
 
@@ -132,14 +143,15 @@ class Worker:
         for thread in threads:
             thread.join()
 
+
 if __name__ == "__main__":
-    #from dotenv import load_dotenv
-    #load_dotenv()
+    # from dotenv import load_dotenv
+    # load_dotenv()
 
     api_key = os.getenv("VIRUSTOTAL_API_KEY")
     if not api_key:
         raise Exception("VIRUSTOTAL_API_KEY environment variable required")
-	
+
     user = os.getenv("POSTGRES_USER")
     password = os.getenv("POSTGRES_PASSWORD")
     database = os.getenv("POSTGRES_DB")
@@ -149,14 +161,14 @@ if __name__ == "__main__":
     # Validate required environment variables
     if not all([user, password, database]):
         raise Exception("Missing required environment variables: POSTGRES_USER, POSTGRES_PASSWORD, POSTGRES_DB")
-	
+
     url = f"postgresql://{user}:{password}@{host}:{port}/{database}"
 
     init_database_url(url)
-	
+
     reports_dir = "/data/reports"
     os.makedirs(reports_dir, exist_ok=True)
-    
+
     num_threads = int(os.getenv("WORKER_THREADS", 1))
     worker = Worker(num_threads)
     worker.run()

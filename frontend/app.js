@@ -8,11 +8,27 @@ const App = () => {
     const [message, setMessage] = useState(null);
     const [dragActive, setDragActive] = useState(false);
     const [wsStatus, setWsStatus] = useState('Connecting...');
-    
+    const [tooltip, setTooltip] = useState({ show: false, taskId: null, message: '', x: 0, y: 0 });
+
     const wsRef = useRef(null);
     const reconnectAttemptRef = useRef(0);
 
     const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
+
+    const showTooltip = (e, taskId, message) => {
+        const rect = e.target.getBoundingClientRect();
+        setTooltip({
+            show: true,
+            taskId,
+            message,
+            x: rect.left + rect.width / 2,
+            y: rect.top - 10
+        });
+    };
+
+    const hideTooltip = () => {
+        setTooltip({ show: false, taskId: null, message: '', x: 0, y: 0 });
+    };
 
     const connectWebSocket = async () => {
         while(true) {
@@ -166,7 +182,7 @@ const App = () => {
                 {/* Upload Section */}
                 <div className="bg-white rounded-lg shadow-md p-6 mb-8">
                     <h2 className="text-2xl font-bold mb-4">Upload PDF</h2>
-                    
+
                     <form onSubmit={handleUpload} className="space-y-4">
                         <input
                             type="text"
@@ -260,8 +276,15 @@ const App = () => {
                                             <td className="px-6 py-4">{task.filename}</td>
                                             <td className="px-6 py-4">
                                                 <span
-                                                    className={`px-2 py-1 text-xs font-semibold rounded-full ${getStatusColor(task.status)}`}
-                                                    title={task.status === 'FAILED' && task.error_message ? task.error_message : ''}
+                                                    className={`px-2 py-1 text-xs font-semibold rounded-full ${getStatusColor(task.status)} ${
+                                                        task.status === 'FAILED' && task.error_message ? 'cursor-pointer' : ''
+                                                    }`}
+                                                    onMouseEnter={(e) => {
+                                                        if (task.status === 'FAILED' && task.error_message) {
+                                                            showTooltip(e, task.id, task.error_message);
+                                                        }
+                                                    }}
+                                                    onMouseLeave={hideTooltip}
                                                 >
                                                     {task.status}
                                                     {task.status === 'FAILED' && ' ⚠️'}
@@ -296,6 +319,24 @@ const App = () => {
                         </table>
                     </div>
                 </div>
+
+                {/* Custom Tooltip */}
+                {tooltip.show && (
+                    <div
+                        className="fixed z-50 bg-gray-900 text-white text-sm rounded-lg p-3 max-w-xs shadow-lg pointer-events-none"
+                        style={{
+                            left: tooltip.x,
+                            top: tooltip.y,
+                            transform: 'translateX(-50%) translateY(-100%)'
+                        }}
+                    >
+                        <div className="break-words">{tooltip.message}</div>
+                        <div
+                            className="absolute top-full left-1/2 transform -translate-x-1/2 w-2 h-2 bg-gray-900 rotate-45"
+                            style={{ marginTop: '-4px' }}
+                        ></div>
+                    </div>
+                )}
             </div>
         </div>
     );
