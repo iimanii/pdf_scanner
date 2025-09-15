@@ -1,0 +1,57 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Scan Results - PDF Scanner</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="bg-gray-100">
+    <div class="container mx-auto p-4">
+        <div class="bg-white rounded-lg shadow-md p-6">
+            <h1 class="text-2xl font-bold mb-4">Scan Results</h1>
+            <div id="loading" class="text-center">Loading...</div>
+            <div id="results" class="hidden">
+                <!-- Results will be populated here -->
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // Get task ID from URL
+        const taskId = window.location.pathname.split('/').pop();
+
+        // Fetch and display results
+        fetch(`/api/scan-results/${taskId}`)
+            .then(response => response.json())
+            .then(data => {
+                document.getElementById('loading').classList.add('hidden');
+                document.getElementById('results').classList.remove('hidden');
+                displayResults(data);
+            })
+            .catch(error => {
+                document.getElementById('loading').innerHTML = 'Error loading results';
+            });
+
+        function displayResults(data) {
+            const resultsDiv = document.getElementById('results');
+            const scanData = data.scan_results.data.attributes;
+
+            resultsDiv.innerHTML = `
+                <h2>File: ${data.task.filename}</h2>
+                <p>Status: ${data.task.status}</p>
+                <p>Scan Date: ${new Date(data.task.created_at).toLocaleString()}</p>
+
+                <h3 class="text-lg font-bold mt-4">Security Analysis</h3>
+                <p>Malicious: ${scanData.stats.malicious}</p>
+                <p>Suspicious: ${scanData.stats.suspicious}</p>
+                <p>Harmless: ${scanData.stats.harmless}</p>
+
+                <a href="${data.task.virustotal_url}" target="_blank" class="text-blue-600">
+                    View on VirusTotal
+                </a>
+            `;
+        }
+    </script>
+</body>
+</html>

@@ -1,0 +1,94 @@
+version: '3.8'
+
+services:
+    postgres:
+        image: postgres:15
+        ports:
+            - "5432:5432"
+        environment:
+            POSTGRES_DB: ${POSTGRES_DB}
+            POSTGRES_USER: ${POSTGRES_USER}
+            POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+        volumes:
+            - postgres_data:/var/lib/postgresql/data
+            - ./api/init.sql:/docker-entrypoint-initdb.d/init.sql            
+        restart: unless-stopped
+        healthcheck:
+            test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+            interval: 5s
+            timeout: 5s
+            retries: 5
+    api:
+        image: python:3.11-slim
+        command: >
+            bash -c "
+            pip install fastapi uvicorn sqlalchemy python-multipart requests psycopg2-binary websockets asyncpg &&
+            python main.py
+            "
+        volumes:
+            - ./api:/api
+            - ./shared:/api/shared
+            - data:/data
+        working_dir: /api
+        environment:
+            POSTGRES_DB: ${POSTGRES_DB}
+            POSTGRES_USER: ${POSTGRES_USER}
+            POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+            VIRUSTOTAL_API_KEY: ${VIRUSTOTAL_API_KEY}
+#        restart: unless-stopped
+        depends_on:
+          postgres:
+              condition: service_healthy
+
+    worker:
+        image: python:3.11-slim
+        command: >
+            bash -c "
+            pip install sqlalchemy requests psycopg2-binary &&
+            python worker.py
+            "
+        volumes:
+            - ./worker:/worker
+            - ./shared:/worker/shared
+            - data:/data
+        working_dir: /worker
+        environment:
+            POSTGRES_DB: ${POSTGRES_DB}
+            POSTGRES_USER: ${POSTGRES_USER}
+            POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+            VIRUSTOTAL_API_KEY: ${VIRUSTOTAL_API_KEY}
+#        restart: unless-stopped
+        depends_on:
+          postgres:
+              condition: service_healthy
+
+    nginx:
+        image: nginx:alpine
+        ports:
+            - "80:80"
+        volumes:
+            - ./nginx.conf:/etc/nginx/conf.d/default.conf
+            - ./frontend:/var/www/html
+            - data:/data
+        depends_on:
+            - api
+        restart: unless-stopped
+
+#    pgadmin:
+#      image: dpage/pgadmin4:latest
+#      environment:
+#        PGADMIN_DEFAULT_EMAIL: a@a.a
+#        PGADMIN_DEFAULT_PASSWORD: a
+#        PGADMIN_CONFIG_CONSOLE_LOG_LEVEL: 50
+#        GUNICORN_ACCESS_LOGFILE: /dev/null
+#      ports:
+#        - "10000:80"
+#      depends_on:
+#        - postgres
+#      restart: unless-stopped
+#      volumes:
+#          - pgadmin_data:/var/lib/pgadmin
+volumes:
+    pgadmin_data:
+    postgres_data:
+    data:
