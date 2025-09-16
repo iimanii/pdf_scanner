@@ -10,10 +10,24 @@ import json
 from virustotal import VirusTotal
 
 
+def log_execution_step(step, task_id=None, **kwargs):
+    log_data = {
+        "timestamp": datetime.utcnow().isoformat(),
+        "step": step,
+        "thread": threading.current_thread().name,
+        **kwargs
+    }
+    if task_id:
+        log_data["task_id"] = task_id
+    print(json.dumps(log_data), flush=True)
+
+
 class Worker:
     def __init__(self, threads=1):
         self.num_threads = threads
         self.running = True
+
+        log_execution_step("worker_initialized", threads=threads)
 
         # Setup signal handlers for graceful shutdown
         signal.signal(signal.SIGTERM, self.shutdown_handler)
@@ -21,6 +35,8 @@ class Worker:
 
     def shutdown_handler(self, signum, frame):
         """Handle shutdown signals gracefully"""
+        signal_name = "SIGTERM" if signum == signal.SIGTERM else "SIGINT"
+        log_execution_step("shutdown_signal_received", signal=signal_name, signum=signum)
         print("Received shutdown signal, stopping worker...")
         self.running = False
 
@@ -30,37 +46,64 @@ class Worker:
         # Tasks are stale if heartbeat is older than 15 seconds
         stale_time = datetime.utcnow() - timedelta(seconds=15)
 
-        task = db.query(Task).filter(
-            or_(
-                Task.status == "PENDING",
-                and_(
-                    Task.status == "RUNNING",
-                    or_(
-                        Task.worker_heartbeat.is_(None),
-                        Task.worker_heartbeat < stale_time
+        try:
+            task = db.query(Task).filter(
+                or_(
+                    Task.status == "PENDING",
+                    and_(
+                        Task.status == "RUNNING",
+                        or_(
+                            Task.worker_heartbeat.is_(None),
+                            Task.worker_heartbeat < stale_time
+                        )
                     )
                 )
-            )
-        ).with_for_update(skip_locked=True).first()
+            ).with_for_update(skip_locked=True).first()
 
-        if task:
-            print(f"Thread {threading.current_thread().name} claimed task {task.id}", flush=True)
+            if task:
+                log_execution_step("task_claimed", task.id,
+                                   status=task.status,
+                                   virustotal_id=task.virustotal_id,
+                                   worker_heartbeat=task.worker_heartbeat.isoformat() if task.worker_heartbeat else None)
 
-        return task, db
+            return task, db
+        except Exception as e:
+            log_execution_step("task_claim_error", error=str(e), error_type=type(e).__name__)
+            raise
 
     def worker_thread(self):
         """Individual worker thread function"""
-        while self.running:
-            task, db = self.claim_next_task()
+        log_execution_step("worker_thread_started")
 
+        while self.running:
             try:
-                if task and self.running:
-                    print(f"Found task, processing {task.id}", flush=True)
-                    self.process_task(task, db)
-                elif self.running:
-                    time.sleep(5)
-            finally:
-                db.close()
+                task, db = self.claim_next_task()
+
+                try:
+                    if task and self.running:
+                        self.process_task(task, db)
+                    elif self.running:
+                        time.sleep(5)
+                except Exception as e:
+                    if task:
+                        log_execution_step("task_processing_error", task.id,
+                                           error=str(e), error_type=type(e).__name__)
+                    else:
+                        log_execution_step("worker_thread_error",
+                                           error=str(e), error_type=type(e).__name__)
+                finally:
+                    try:
+                        db.close()
+                    except Exception as e:
+                        log_execution_step("database_close_error",
+                                           error=str(e), error_type=type(e).__name__)
+            except Exception as e:
+                log_execution_step("worker_thread_critical_error",
+                                   error=str(e), error_type=type(e).__name__)
+                # Sleep briefly before retrying to avoid tight error loops
+                time.sleep(1)
+
+        log_execution_step("worker_thread_stopped")
 
     def process_task(self, task, db):
         """Process task based on current state"""
@@ -69,14 +112,20 @@ class Worker:
         try:
             if task.status == "PENDING":
                 # Step 1: Upload to VirusTotal
-                analysis_id = scanner.upload_file(task.stored_file_path)
+                log_execution_step("upload_started", task.id, file_path=task.stored_file_path)
 
+                if not os.path.exists(task.stored_file_path):
+                    raise FileNotFoundError(f"File not found: {task.stored_file_path}")
+
+                analysis_id = scanner.upload_file(task.stored_file_path)
+                log_execution_step("upload_completed", task.id, analysis_id=analysis_id)
+
+                # Update task status
                 task.status = "RUNNING"
                 task.virustotal_id = analysis_id
                 task.worker_heartbeat = datetime.utcnow()
-                db.commit()
 
-                print(f"Task {task.id} uploaded, analysis ID: {analysis_id}", flush=True)
+                db.commit()
 
             elif task.status == "RUNNING" and task.virustotal_id:
                 # Step 2: Check if analysis is complete
@@ -86,8 +135,14 @@ class Worker:
                 if status == 'completed':
                     # Save results and mark complete
                     report_path = f"/data/reports/{task.id}.json"
+                    os.makedirs(os.path.dirname(report_path), exist_ok=True)
+
                     with open(report_path, 'w') as f:
                         json.dump(analysis, f, indent=2)
+
+                    log_execution_step("task_completed", task.id,
+                                       report_path=report_path,
+                                       virustotal_url=f"https://www.virustotal.com/gui/file-analysis/{task.virustotal_id}")
 
                     task.status = "COMPLETED"
                     task.scan_report_path = report_path
@@ -96,20 +151,28 @@ class Worker:
                     db.commit()
 
                     print(f"Task {task.id} completed")
+
                 elif status in ['queued', 'running']:
                     # Still processing, update heartbeat and release
                     task.worker_heartbeat = datetime.utcnow()
                     db.commit()
                     print(f"Task {task.id} still processing: {status}", flush=True)
+
                 elif status in ['cancelled', 'timeout', 'failure']:
                     # VirusTotal analysis failed
+                    log_execution_step("analysis_failed", task.id,
+                                       virustotal_status=status, reason="virustotal_analysis_failed")
+
                     task.status = "FAILED"
                     task.error_message = f"VirusTotal analysis {status}"
                     increment_metric('failed', db)
                     db.commit()
                     print(f"Task {task.id} failed with VirusTotal status: {status}", flush=True)
+
                 else:
                     # Unknown status
+                    log_execution_step("unknown_analysis_status", task.id, virustotal_status=status)
+
                     task.status = "FAILED"
                     task.error_message = f"Unknown VirusTotal status: {status}"
                     increment_metric('failed', db)
@@ -118,11 +181,28 @@ class Worker:
 
             elif task.status == "RUNNING" and not task.virustotal_id:
                 # Step 3: Handle corrupted state - reset to PENDING
+                log_execution_step("corrupted_state_reset", task.id,
+                                   reason="running_without_virustotal_id")
+
                 print(f"Task {task.id} in RUNNING state but missing virustotal_id, resetting to PENDING")
                 task.status = "PENDING"
                 task.worker_heartbeat = datetime.utcnow()
                 db.commit()
+
+        except FileNotFoundError as e:
+            log_execution_step("file_not_found_error", task.id,
+                               error=str(e), file_path=getattr(task, 'stored_file_path', 'unknown'))
+
+            task.status = "FAILED"
+            task.error_message = f"File not found: {str(e)}"
+            increment_metric('failed', db)
+            db.commit()
+
         except Exception as e:
+            log_execution_step("task_processing_exception", task.id,
+                               error=str(e), error_type=type(e).__name__,
+                               current_status=task.status)
+
             task.status = "FAILED"
             task.error_message = str(e)
             increment_metric('failed', db)
@@ -131,28 +211,40 @@ class Worker:
 
     def run(self):
         """Start multiple worker threads"""
+        log_execution_step("worker_startup", threads=self.num_threads)
         print(f"Starting worker with {self.num_threads} threads")
 
         threads = []
 
         # Start all worker threads
         for i in range(self.num_threads):
-            thread = threading.Thread(target=self.worker_thread, name=f"Worker-{i + 1}")
+            thread_name = f"Worker-{i + 1}"
+            thread = threading.Thread(target=self.worker_thread, name=thread_name)
             thread.daemon = True
             threads.append(thread)
             thread.start()
 
-        # Wait for all threads to complete
-        for thread in threads:
-            thread.join()
+        try:
+            # Wait for all threads to complete
+            for thread in threads:
+                thread.join()
+        except KeyboardInterrupt:
+            log_execution_step("keyboard_interrupt_received")
+            self.running = False
+            print("Keyboard interrupt received, shutting down...")
+
+        log_execution_step("worker_shutdown_complete")
 
 
 if __name__ == "__main__":
+    log_execution_step("application_startup")
+
     # from dotenv import load_dotenv
     # load_dotenv()
 
     api_key = os.getenv("VIRUSTOTAL_API_KEY")
     if not api_key:
+        log_execution_step("startup_error", error="VIRUSTOTAL_API_KEY environment variable required")
         raise Exception("VIRUSTOTAL_API_KEY environment variable required")
 
     user = os.getenv("POSTGRES_USER")
@@ -163,15 +255,37 @@ if __name__ == "__main__":
 
     # Validate required environment variables
     if not all([user, password, database]):
+        missing_vars = [var for var, val in
+                        [("POSTGRES_USER", user), ("POSTGRES_PASSWORD", password), ("POSTGRES_DB", database)] if
+                        not val]
+        log_execution_step("startup_error", error="Missing required environment variables",
+                           missing_variables=missing_vars)
         raise Exception("Missing required environment variables: POSTGRES_USER, POSTGRES_PASSWORD, POSTGRES_DB")
 
     url = f"postgresql://{user}:{password}@{host}:{port}/{database}"
 
-    init_database_url(url)
+    try:
+        init_database_url(url)
+        log_execution_step("database_initialized")
+    except Exception as e:
+        log_execution_step("database_initialization_error", error=str(e), error_type=type(e).__name__)
+        raise
 
     reports_dir = "/data/reports"
-    os.makedirs(reports_dir, exist_ok=True)
+    try:
+        os.makedirs(reports_dir, exist_ok=True)
+    except Exception as e:
+        log_execution_step("reports_directory_creation_error",
+                           error=str(e), error_type=type(e).__name__, reports_dir=reports_dir)
+        raise
 
     num_threads = int(os.getenv("WORKER_THREADS", 1))
-    worker = Worker(num_threads)
-    worker.run()
+
+    try:
+        worker = Worker(num_threads)
+        worker.run()
+    except Exception as e:
+        log_execution_step("worker_run_error", error=str(e), error_type=type(e).__name__)
+        raise
+    finally:
+        log_execution_step("application_shutdown")
