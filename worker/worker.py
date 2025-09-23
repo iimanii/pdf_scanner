@@ -8,7 +8,7 @@ from shared.database import get_db_session, Task, init_database_url, increment_m
 from sqlalchemy import or_, and_
 import json
 from virustotal import VirusTotal
-
+import shared.utils as utils
 
 def log_execution_step(step, task_id=None, **kwargs):
     log_data = {
@@ -116,6 +116,18 @@ class Worker:
 
                 if not os.path.exists(task.stored_file_path):
                     raise FileNotFoundError(f"File not found: {task.stored_file_path}")
+
+                with open(task.stored_file_path, 'rb') as file:
+                    file_content = file.read()
+
+                if not utils.is_valid_pdf_content(file_content):
+                    log_execution_step("file_not_pdf", task.id, file_path=task.stored_file_path)
+
+                    task.status = "FAILED"
+                    task.error_message = f"File not a valid pdf"
+                    increment_metric('failed', db)
+                    db.commit()
+                    return
 
                 analysis_id = scanner.upload_file(task.stored_file_path)
                 log_execution_step("upload_completed", task.id, analysis_id=analysis_id)

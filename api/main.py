@@ -124,8 +124,8 @@ async def upload_pdf(
     file_content = await file.read()
 
     # Check if it's a valid PDF (before saving)
-    if not utils.is_valid_pdf_content(file_content):
-        raise HTTPException(status_code=400, detail="File is not a valid PDF")
+    #if not utils.is_valid_pdf_content(file_content):
+    #    raise HTTPException(status_code=400, detail="File is not a valid PDF")
 
     # Check file size
     file_size = len(file_content)
